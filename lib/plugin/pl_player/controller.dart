@@ -1,4 +1,4 @@
-import 'dart:async' show StreamSubscription, Timer;
+import 'dart:async' show StreamSubscription, Timer, unawaited;
 import 'dart:convert' show ascii;
 import 'dart:io' show Platform;
 import 'dart:math' show max, min;
@@ -68,7 +68,7 @@ import 'package:window_manager/window_manager.dart';
 
 typedef PlayCallback = Future<void>? Function();
 
-class PlPlayerController with BlockConfigMixin {
+class PlPlayerController with WidgetsBindingObserver, BlockConfigMixin {
   Player? _videoPlayerController;
   VideoController? _videoController;
 
@@ -373,6 +373,9 @@ class PlPlayerController with BlockConfigMixin {
 
   late final bool tempPlayerConf = Pref.tempPlayerConf;
 
+  bool _pauseDueToIOSBackgroundMode = false;
+  bool _restoreVideoTrackDueToIOSBackgroundMode = false;
+
   late int? cacheVideoQa = PlatformUtils.isMobile ? null : Pref.defaultVideoQa;
   late int cacheAudioQa = Pref.defaultAudioQa;
   bool enableHeart = true;
@@ -577,6 +580,10 @@ class PlPlayerController with BlockConfigMixin {
           .listen(_onOrientationChanged);
     }
 
+    if (Platform.isIOS) {
+      WidgetsBinding.instance.addObserver(this);
+    }
+
     if (!Accounts.heartbeat.isLogin || Pref.historyPause) {
       enableHeart = false;
     }
@@ -595,6 +602,91 @@ class PlPlayerController with BlockConfigMixin {
   void _onUserLeaveHint() {
     if (playerStatus.isPlaying && _isCurrVideoPage) {
       enterPip();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!Platform.isIOS) {
+      return;
+    }
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        unawaited(_handleIOSBackground());
+        break;
+      case AppLifecycleState.resumed:
+        unawaited(_handleIOSForeground());
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+        break;
+    }
+  }
+
+  Future<void> _handleIOSBackground() async {
+    final player = _videoPlayerController;
+    if (player == null) {
+      return;
+    }
+
+    if (!continuePlayInBackground.value && player.state.playing) {
+      _pauseDueToIOSBackgroundMode = true;
+      await player.pause();
+    }
+
+    if (hwdec != null &&
+        !onlyPlayAudio.value &&
+        !_restoreVideoTrackDueToIOSBackgroundMode) {
+      _restoreVideoTrackDueToIOSBackgroundMode = true;
+      await player.setVideoTrack(VideoTrack.no());
+    }
+  }
+
+  Future<void> _handleIOSForeground() async {
+    final player = _videoPlayerController;
+    if (player == null) {
+      _pauseDueToIOSBackgroundMode = false;
+      _restoreVideoTrackDueToIOSBackgroundMode = false;
+      return;
+    }
+
+    final shouldResumePlay = _pauseDueToIOSBackgroundMode;
+    final shouldRestoreVideoTrack = _restoreVideoTrackDueToIOSBackgroundMode;
+    _pauseDueToIOSBackgroundMode = false;
+    _restoreVideoTrackDueToIOSBackgroundMode = false;
+
+    if (shouldResumePlay || shouldRestoreVideoTrack) {
+      await _restoreIOSHardwareDecoder(player);
+    }
+
+    if (shouldRestoreVideoTrack && !onlyPlayAudio.value) {
+      await player.setVideoTrack(VideoTrack.auto());
+    }
+
+    if (shouldResumePlay) {
+      await player.play();
+    }
+  }
+
+  Future<void> _restoreIOSHardwareDecoder(Player player) async {
+    if (hwdec == null || onlyPlayAudio.value) {
+      return;
+    }
+
+    try {
+      final result = (player as dynamic).setProperty(
+        'hwdec',
+        'videotoolbox',
+      );
+      if (result is Future) {
+        await result;
+      }
+    } catch (err, stack) {
+      if (kDebugMode) {
+        debugPrint('restore iOS hwdec failed: $err');
+        debugPrint(stack.toString());
+      }
     }
   }
 
@@ -1655,6 +1747,9 @@ class PlPlayerController with BlockConfigMixin {
       windowManager.setAlwaysOnTop(false);
     }
 
+    if (Platform.isIOS) {
+      WidgetsBinding.instance.removeObserver(this);
+    }
     _removeListeners();
     _positionListeners.clear();
     _statusListeners.clear();

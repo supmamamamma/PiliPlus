@@ -329,6 +329,9 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (Platform.isIOS) {
+      return;
+    }
     if (!plPlayerController.continuePlayInBackground.value) {
       late final player = plPlayerController.videoPlayerController;
       if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
@@ -2075,6 +2078,9 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
                   child: FittedBox(
                     fit: videoFit.boxFit,
                     alignment: widget.alignment,
+                    // 当前使用的 SimpleVideo 不暴露
+                    // pauseUponEnteringBackgroundMode / resumeUponEnteringForegroundMode，
+                    // iOS 后台恢复逻辑在 PlPlayerController 中处理。
                     child: SimpleVideo(
                       controller: plPlayerController.videoController!,
                       fill: widget.fill,
